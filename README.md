@@ -30,6 +30,61 @@ It works from the lead and from Claude teammates in an [agent team](https://code
                        your model (Qwen via company API, Ollama …)
 ```
 
+## Install by asking Claude
+
+Paste this into Claude Code. Claude will check your machine, ask for your model's URL, model id and key, set up OpenCode or ZCode, install the plugin with your settings, and check that the model answers:
+
+```
+Install and set up the opencode-team plugin for me by following
+https://raw.githubusercontent.com/NakharinA/Claude-Local-Teammate-Plugin/main/INSTALL.md
+Ask me for anything you need (backend, model URL, model id, API key).
+```
+
+To skip the questions, put the answers in the prompt:
+
+```
+Install and set up the opencode-team plugin by following
+https://raw.githubusercontent.com/NakharinA/Claude-Local-Teammate-Plugin/main/INSTALL.md
+Backend: OpenCode. Model: qwen3.8 at https://llm.mycompany.com/v1, key in the COMPANY_API_KEY env var.
+```
+
+The steps Claude follows are in [INSTALL.md](INSTALL.md), if you'd rather do it by hand.
+
+## Quick install
+
+You need Claude Code **2.1.287 or newer** (`claude --version`; update with `npm i -g @anthropic-ai/claude-code@latest`) and Node.js.
+
+**With OpenCode.** Your model must already work in OpenCode (`opencode run -m company/qwen3.8 "say hi"`; see [Configure](#1-tell-opencode-about-your-model) to add it).
+
+```bash
+npm i -g opencode-ai
+claude plugin install opencode-team --marketplace NakharinA/Claude-Local-Teammate-Plugin \
+  --config model=company/qwen3.8
+```
+
+**With ZCode.** Install the [ZCode desktop app](https://github.com/zai-org/ZCode/releases) and add your Qwen provider to `~/.zcode/v2/provider_config.json` (format under [Configure](#1-tell-opencode-about-your-model)).
+
+```bash
+claude plugin install opencode-team --marketplace NakharinA/Claude-Local-Teammate-Plugin \
+  --config backend=zcode --config model=qwen/qwen3.8
+```
+
+Replace `company/qwen3.8` or `qwen/qwen3.8` with your own `provider/model`. On Windows PowerShell, put the command on one line, or replace each `\` with a backtick.
+
+**Then, in your project:**
+
+```
+claude
+/opencode-team setup      # OpenCode only: lets workers message the team
+/opencode-team            # check: server or ZCode found, model, workers
+```
+
+Now ask Claude to delegate:
+
+> Spawn an opencode worker named qwen-api to implement GET /users in src/api.js with a test. Approve its test commands, review its diff, and report back.
+
+Workers edit files on their own, and Claude approves or rejects each shell command they want to run. To approve commands yourself instead, add `--config workerPermissions=ask`. All options are listed under [Configure](#2-set-the-plugins-options).
+
 ## Status
 
 Early (v0.2). Built on Claude Code **mods**, which are new: the APIs this uses can change between Claude Code releases.
@@ -53,14 +108,16 @@ You need Claude Code ≥ 2.1.287, Node.js on `PATH`, and one of:
 - **OpenCode** (`npm i -g opencode-ai`) with your model already working in it, or
 - **ZCode** (the [desktop app](https://github.com/zai-org/ZCode/releases); its CLI ships inside it) with your model added as a provider.
 
-**From GitHub** (after you push this repo; replace `your-org`):
+**From GitHub:**
 
 ```bash
-claude plugin install opencode-team --marketplace your-org/opencode-team
+claude plugin install opencode-team --marketplace NakharinA/Claude-Local-Teammate-Plugin
 # Claude Code older than 2.1.292: two steps
-claude plugin marketplace add your-org/opencode-team
+claude plugin marketplace add NakharinA/Claude-Local-Teammate-Plugin
 claude plugin install opencode-team@opencode-team
 ```
+
+Add `--scope project` to enable it for one project only (stored in `.claude/settings.json`, shared with the repo). To update later: `claude plugin update opencode-team@opencode-team`.
 
 **From a local folder** (one session, good for trying it):
 
