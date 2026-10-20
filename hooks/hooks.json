@@ -1,0 +1,4 @@
+{
+  "description": "opencode-team: OpenCode workers as Claude Code teammates",
+  "modules": ["./register.js"]
+}

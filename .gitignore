@@ -1,0 +1,4 @@
+node_modules/
+.opencode-team/
+.claude-plugin/types/
+tsconfig.json

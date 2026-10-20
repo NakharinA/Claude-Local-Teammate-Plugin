@@ -1,0 +1,91 @@
+{
+  "name": "opencode-team",
+  "version": "0.2.0",
+  "description": "Let OpenCode or ZCode workers on your own model (Qwen, DeepSeek, GLM, Ollama…) join your Claude Code team: spawn them with the Agent tool, talk to them with SendMessage, and let Claude approve their shell commands as project manager.",
+  "author": {
+    "name": "opencode-team contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "zcode",
+    "agent-teams",
+    "local-llm",
+    "qwen",
+    "orchestration",
+    "mod"
+  ],
+  "userConfig": {
+    "backend": {
+      "type": "string",
+      "title": "Worker agent",
+      "description": "Which coding agent runs the workers: opencode (an `opencode serve` server) or zcode (headless ZCode runs).",
+      "options": [
+        "opencode",
+        "zcode"
+      ],
+      "default": "opencode"
+    },
+    "model": {
+      "type": "string",
+      "title": "Worker model (required)",
+      "description": "The only model workers run on. OpenCode: provider/model, e.g. company/qwen3.8. ZCode: providerId/modelId from ~/.zcode/v2/provider_config.json, e.g. qwen/qwen3-coder-plus.",
+      "default": ""
+    },
+    "workerPermissions": {
+      "type": "string",
+      "title": "Worker permissions",
+      "description": "lead: workers edit freely and Claude approves or rejects each shell command (no dialogs for you). ask: you approve each shell command in a dialog. read-only: no edits, no shell. full-auto: edits and shell without asking.",
+      "options": [
+        "lead",
+        "ask",
+        "read-only",
+        "full-auto"
+      ],
+      "default": "lead"
+    },
+    "serverUrl": {
+      "type": "string",
+      "title": "OpenCode server URL",
+      "description": "Where `opencode serve` listens. The mod starts it here if nothing answers and auto-start is on.",
+      "default": "http://127.0.0.1:4096"
+    },
+    "autoStart": {
+      "type": "boolean",
+      "title": "Start OpenCode automatically",
+      "description": "Start `opencode serve` in the project folder when the server isn't running.",
+      "default": true
+    },
+    "opencodeCommand": {
+      "type": "string",
+      "title": "OpenCode command",
+      "description": "The command that runs OpenCode, if `opencode` isn't on your PATH.",
+      "default": "opencode"
+    },
+    "agent": {
+      "type": "string",
+      "title": "OpenCode agent",
+      "description": "The OpenCode agent workers run as. build is OpenCode's own coding agent; it keeps plugins that swap the default agent from changing the model.",
+      "default": "build"
+    },
+    "zcodeCommand": {
+      "type": "string",
+      "title": "ZCode command",
+      "description": "The ZCode CLI. Default: the copy inside the ZCode desktop app on Windows (…\\Programs\\ZCode\resources\\glm\\zcode.cjs), else `zcode` on PATH.",
+      "default": "zcode"
+    },
+    "serverPassword": {
+      "type": "string",
+      "title": "OpenCode server password",
+      "description": "Only if you set OPENCODE_SERVER_PASSWORD for `opencode serve`.",
+      "sensitive": true,
+      "default": ""
+    },
+    "pollSeconds": {
+      "type": "number",
+      "title": "Poll interval (seconds)",
+      "description": "How often to check workers for replies and messages.",
+      "default": 2
+    }
+  }
+}

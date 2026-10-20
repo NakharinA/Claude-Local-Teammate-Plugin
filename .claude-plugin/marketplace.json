@@ -1,0 +1,12 @@
+{
+  "name": "opencode-team",
+  "owner": { "name": "opencode-team contributors" },
+  "description": "Bring OpenCode workers — local or company-hosted models such as Qwen — into Claude Code agent teams.",
+  "plugins": [
+    {
+      "name": "opencode-team",
+      "source": "./",
+      "description": "OpenCode workers (any model OpenCode can reach) as Claude Code teammates."
+    }
+  ]
+}
