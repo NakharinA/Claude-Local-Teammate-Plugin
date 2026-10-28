@@ -1,6 +1,6 @@
 {
   "name": "opencode-team",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Let OpenCode or ZCode workers on your own model (Qwen, DeepSeek, GLM, Ollama…) join your Claude Code team: spawn them with the Agent tool, talk to them with SendMessage, and let Claude approve their shell commands as project manager.",
   "author": {
     "name": "opencode-team contributors"
@@ -30,6 +30,12 @@
       "type": "string",
       "title": "Worker model (required)",
       "description": "The only model workers run on. OpenCode: provider/model, e.g. company/qwen3.8. ZCode: providerId/modelId from ~/.zcode/v2/provider_config.json, e.g. qwen/qwen3-coder-plus.",
+      "default": ""
+    },
+    "models": {
+      "type": "string",
+      "title": "Other worker models (optional)",
+      "description": "Aliases a spawn can pick with the Agent call's model field, comma-separated alias=model. OpenCode example: sonnet=github-copilot/claude-sonnet-5.5, opus=github-copilot/claude-opus-5.5. A spawn without a model uses \"model\"; an alias that isn't listed is refused, never swapped for another model.",
       "default": ""
     },
     "workerPermissions": {

@@ -168,6 +168,7 @@ In Claude Code run `/plugin configure opencode-team@opencode-team` (or `/config`
 | --- | --- | --- |
 | `backend` | `opencode` | `opencode` or `zcode`: which coding agent runs the workers |
 | `model` | — **(required)** | The only model workers run on. OpenCode: `provider/model`, e.g. `company/qwen3.8`. ZCode: `providerId/modelId` from the provider config, e.g. `qwen/qwen3.8`. Without it, workers aren't started |
+| `models` | — | Optional extra models one spawn can pick with the Agent call's `model` field: `alias=provider/model`, comma-separated, e.g. `sonnet=github-copilot/claude-sonnet-5.5`. Without a `model` on the call, workers use `model`. An alias that isn't listed is refused, never swapped for another model |
 | `workerPermissions` | `lead` | `lead`: workers edit files freely and **Claude approves or rejects every shell command**; you get no dialogs. `ask`: you approve every shell command in a Claude Code dialog. `read-only`: no edits, no shell. `full-auto`: edits and shell without asking |
 | `serverUrl` | `http://127.0.0.1:4096` | OpenCode: where `opencode serve` listens. With OpenCode 2, if nothing usable answers here, the mod uses OpenCode's background service instead (URL and password from `~/.local/state/opencode/service.json`) |
 | `autoStart` | `true` | OpenCode: start `opencode serve` in the project folder if nothing answers |

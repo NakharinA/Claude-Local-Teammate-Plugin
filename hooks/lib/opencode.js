@@ -139,10 +139,11 @@ function permissionRulesV2(mode) {
   )
 }
 
-function modelRef(cfg) {
-  const i = cfg.model.indexOf('/')
+/** provider/model as OpenCode's model ref; null without a provider. */
+function modelRef(ref) {
+  const i = ref.indexOf('/')
   if (i <= 0) return null
-  return { providerID: cfg.model.slice(0, i), modelID: cfg.model.slice(i + 1) }
+  return { providerID: ref.slice(0, i), modelID: ref.slice(i + 1) }
 }
 
 function summarize(replies) {
@@ -216,7 +217,7 @@ export async function ensure($, cfg) {
 export async function create($, cfg, w) {
   if (server && server.v === 2) {
     const body = { agent: cfg.agent, location: { directory: await $.session.cwd() }, permissions: permissionRulesV2(cfg.workerPermissions) }
-    const model = modelRef(cfg)
+    const model = modelRef(w.model || cfg.model)
     // v2 pins the model on the session, not on each prompt.
     if (model) body.model = { providerID: model.providerID, id: model.modelID }
     const res = await oc($, cfg, 'POST', '/api/session', body)
@@ -241,7 +242,7 @@ export async function prompt($, cfg, w, text, system, first) {
     return
   }
   const body = { parts: [{ type: 'text', text }], system, agent: cfg.agent }
-  const model = modelRef(cfg)
+  const model = modelRef(w.model || cfg.model)
   if (model) body.model = model
   if (!first) {
     const msgs = await oc($, cfg, 'GET', '/session/' + w.sessionID + '/message')

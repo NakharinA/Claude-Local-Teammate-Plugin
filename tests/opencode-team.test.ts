@@ -806,3 +806,49 @@ test('an OpenCode 2 server without its password and no service says so', async (
   expect(out.deny).toContain('refused the password (HTTP 401)')
   expect(h.created.length).toBe(0)
 })
+
+// ---------------------------------------------------------------------------
+// Per-worker models: the Agent call's model picks one of the "models" aliases
+
+const aliases = { models: 'sonnet=github-copilot/claude-sonnet-5.5, opus = github-copilot/claude-opus-5.5' }
+
+test('a spawn with a mapped model runs on that model, and its replies are not flagged', async ($, on) => {
+  const h = harness(on)
+  await start($)
+  await $.tool.call({ ...spawnCall, model: 'sonnet' } as any)
+  expect(h.prompts[0].body.model).toEqual({ providerID: 'github-copilot', modelID: 'claude-sonnet-5.5' })
+  h.finish('ses_1', 'done', { model: 'github-copilot/claude-sonnet-5.5' })
+  await h.clock.advance(2000)
+  expect(h.submitted[0]).toContain('Reply from qwen-api (OpenCode worker, github-copilot/claude-sonnet-5.5)')
+  expect(h.submitted[0]).not.toContain('⚠')
+  const roster = JSON.parse(h.files.get('/work/.opencode-team/team.json')!)
+  expect(roster.saved[0].model).toBe('github-copilot/claude-sonnet-5.5')
+}, aliases)
+
+test('workers spawned without a model keep the default next to an aliased one', async ($, on) => {
+  const h = harness(on)
+  await start($)
+  await $.tool.call({ ...spawnCall, model: 'opus' } as any)
+  await $.tool.call({ ...spawnCall, name: 'qwen-web' } as any)
+  expect(h.prompts[0].body.model).toEqual({ providerID: 'github-copilot', modelID: 'claude-opus-5.5' })
+  expect(h.prompts[1].body.model).toEqual({ providerID: 'company', modelID: 'qwen-test' })
+  const out: any = await $.command.run({ command: 'opencode-team', args: '' })
+  expect(out.text).toContain('- qwen-api [busy] Build users API · github-copilot/claude-opus-5.5')
+  expect(out.text).toContain('- qwen-web [busy] Build users API · company/qwen-test')
+}, aliases)
+
+test('a model with no alias is refused, never swapped for the default', async ($, on) => {
+  const h = harness(on)
+  await start($)
+  const out: any = await $.tool.call({ ...spawnCall, model: 'haiku' } as any)
+  expect(out.deny).toContain('no worker model is mapped to "haiku"')
+  expect(out.deny).toContain('sonnet → github-copilot/claude-sonnet-5.5')
+  expect(h.sessions.size).toBe(0)
+}, aliases)
+
+test('with OpenCode 2 a mapped model is pinned on the session', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call({ ...spawnCall, model: 'sonnet' } as any)
+  expect(h.created[0].model).toEqual({ providerID: 'github-copilot', id: 'claude-sonnet-5.5' })
+}, aliases)

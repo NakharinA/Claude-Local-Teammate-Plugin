@@ -66,6 +66,9 @@ export function register(on, options) {
       description:
         'A teammate that runs on ' +
         (cfg.model ? 'the model ' + cfg.model : 'your own model') +
+        (Object.keys(cfg.models).length
+          ? ' (or, with the Agent call\'s model set to ' + Object.keys(cfg.models).map((k) => '"' + k + '" → ' + cfg.models[k]).join(', ') + ')'
+          : '') +
         ' through ' + backend.label + ' instead of Claude (for example a local or company-hosted Qwen). ' +
         'Use it for well-scoped implementation work: one module or a few files, with clear acceptance criteria ' +
         'and the exact interfaces to use. Always give it a name (Agent name: "qwen-api") so you can ' +
@@ -179,6 +182,7 @@ function normalizeConfig(o) {
     backend: String(o.backend || 'opencode') === 'zcode' ? 'zcode' : 'opencode',
     serverUrl: String(o.serverUrl || 'http://127.0.0.1:4096').replace(/\/+$/, ''),
     model: String(o.model || '').trim(),
+    models: parseModels(o.models),
     agent: String(o.agent || 'build').trim() || 'build',
     workerPermissions: MODES.includes(perm) ? perm : 'lead',
     autoStart: o.autoStart !== false,
@@ -187,6 +191,34 @@ function normalizeConfig(o) {
     serverPassword: String(o.serverPassword || ''),
     pollMs: Math.max(500, Math.round(Number(o.pollSeconds || 2) * 1000)),
   }
+}
+
+/** "sonnet=github-copilot/claude-sonnet-5.5, opus=…" -> { sonnet: 'github-copilot/claude-sonnet-5.5', … } */
+function parseModels(s) {
+  const out = {}
+  for (const pair of String(s || '').split(',')) {
+    const i = pair.indexOf('=')
+    if (i <= 0) continue
+    const alias = pair.slice(0, i).trim().toLowerCase()
+    const ref = pair.slice(i + 1).trim()
+    if (alias && ref) out[alias] = ref
+  }
+  return out
+}
+
+/** The model one spawn runs on: the Agent call's model, through the "models" aliases, or the default. */
+function modelFor(requested) {
+  const key = String(requested || '').trim().toLowerCase()
+  if (!key) return cfg.model
+  if (cfg.models[key]) return cfg.models[key]
+  // Never fall back silently: asking for one model and getting another defeats the point.
+  const known = Object.keys(cfg.models)
+  throw new Error(
+    'no worker model is mapped to "' + requested + '". ' +
+      (known.length ? 'Mapped: ' + known.map((k) => k + ' → ' + cfg.models[k]).join(', ') + '. ' : '') +
+      'Add it to the plugin option "models" (e.g. sonnet=github-copilot/claude-sonnet-5.5), or leave model out to use ' +
+      (cfg.model || 'the default model') + '.',
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -250,13 +282,15 @@ function slug(s) {
   return out || 'worker'
 }
 
-function workerLabel() {
-  return backend.label + ' worker' + (cfg.model ? ', ' + cfg.model : '')
+function workerLabel(w) {
+  const model = (w && w.model) || cfg.model
+  return backend.label + ' worker' + (model ? ', ' + model : '')
 }
 
 async function spawnWorker($, e) {
   // Workers run only on the model you chose, never on whatever the agent defaults to.
-  if (!cfg.model) {
+  const model = modelFor(e.model)
+  if (!model) {
     throw new Error(
       'no worker model is set. Set the plugin option "model" to your Qwen model (for OpenCode: provider/model, ' +
         'e.g. company/qwen3.8) with /plugin configure opencode-team@opencode-team.',
@@ -274,6 +308,7 @@ async function spawnWorker($, e) {
   const w = {
     name,
     sessionID: '',
+    model,
     description: String(e.description || ''),
     status: 'busy',
     replyTo: sender,
@@ -283,7 +318,7 @@ async function spawnWorker($, e) {
     log: '',
   }
   await bCreate($, w)
-  w.log = '# ' + name + ' (' + workerLabel() + ')\n\nSession: ' + (w.sessionID || 'known after its first turn') + '\n'
+  w.log = '# ' + name + ' (' + workerLabel(w) + ')\n\nSession: ' + (w.sessionID || 'known after its first turn') + '\n'
   workers.set(name, w)
   await writeRoster($)
   await promptWorker($, w, String(e.prompt || ''), sender, true)
@@ -395,7 +430,7 @@ async function announceApprovals($) {
 function approvalText(w, req) {
   const more = w.pending.length > 1 ? ' (' + (w.pending.length - 1) + ' more waiting after this one)' : ''
   return [
-    w.name + ' (' + workerLabel() + ') is waiting for your approval to use ' + req.tool + more + ':',
+    w.name + ' (' + workerLabel(w) + ') is waiting for your approval to use ' + req.tool + more + ':',
     '',
     '    ' + req.what.slice(0, 2000),
     '',
@@ -468,6 +503,7 @@ async function writeRoster($) {
       sessionID: w.sessionID,
       description: w.description,
       status: w.status,
+      model: w.model,
       ...backend.saved(w),
     })),
   }
@@ -497,6 +533,7 @@ async function restoreWorkers($) {
         name: s.name,
         sessionID: s.sessionID,
         description: s.description || '',
+        model: s.model || cfg.model,
         status: s.status === 'busy' ? 'busy' : 'idle',
         replyTo: { kind: 'main', label: 'lead' },
         hops: 0,
@@ -560,7 +597,8 @@ async function deliverReply($, w, r) {
   const lines = []
   if (r.error) lines.push('⚠ The worker stopped with an error: ' + r.error)
   // "Qwen only": say so if the agent answered on a different model than configured.
-  if (r.model && cfg.model && r.model !== cfg.model) lines.push('⚠ This turn ran on ' + r.model + ', not on the configured ' + cfg.model + '.')
+  const expected = w.model || cfg.model
+  if (r.model && expected && r.model !== expected) lines.push('⚠ This turn ran on ' + r.model + ', not on the configured ' + expected + '.')
   if (w.rejected && w.rejected.length) {
     lines.push(
       '⚠ Not approved, so not run (' + (cfg.workerPermissions === 'ask' ? 'rejected or nobody answered' : cfg.workerPermissions) +
@@ -584,7 +622,7 @@ async function deliverReply($, w, r) {
     }
   }
   const text =
-    'Reply from ' + w.name + ' (' + workerLabel() + '):\n\n' + report +
+    'Reply from ' + w.name + ' (' + workerLabel(w) + '):\n\n' + report +
     '\n\nTo answer or give it more work: SendMessage(to: "' + w.name + '"). To stop it: TaskStop("' + w.name + '").'
   await deliverToClaude($, to, text)
   $.ui.toast('opencode-team: ' + w.name + ' replied')
@@ -688,6 +726,9 @@ async function statusText($) {
   const lines = [
     backend.label + ': ' + (backend.id === 'opencode' ? ocWhere(cfg) + (up ? ' (running)' : ' (not running)') : up ? 'available' : 'not found (' + cfg.zcodeCommand + ')'),
     'Worker model: ' + (cfg.model || 'NOT SET — set the "model" option before spawning') + ' · permissions: ' + cfg.workerPermissions,
+    ...(Object.keys(cfg.models).length
+      ? ['Model aliases (Agent model): ' + Object.keys(cfg.models).map((k) => k + ' → ' + cfg.models[k]).join(', ')]
+      : []),
   ]
   const dir = await $.session.cwd()
   if (backend.toolsPath && !(await $.fs.exists(dir + '/' + backend.toolsPath))) {
@@ -696,7 +737,7 @@ async function statusText($) {
   if (!workers.size) lines.push('No workers yet. Ask Claude to spawn one with subagent_type "' + AGENT_TYPE + '".')
   for (const w of workers.values()) {
     const state = w.pending && w.pending.length ? 'awaiting approval' : w.status
-    lines.push('- ' + w.name + ' [' + state + '] ' + w.description + ' (log: ' + TEAM_DIR + '/logs/' + w.name + '.md)')
+    lines.push('- ' + w.name + ' [' + state + '] ' + w.description + ' · ' + (w.model || cfg.model) + ' (log: ' + TEAM_DIR + '/logs/' + w.name + '.md)')
   }
   return lines.join('\n')
 }

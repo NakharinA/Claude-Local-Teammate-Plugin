@@ -160,7 +160,7 @@ export async function prompt($, cfg, w, text, system, first) {
     home: w.home,
     realHome: await realHome($),
     zcode: await resolveCommand($, cfg),
-    model: cfg.model,
+    model: w.model || cfg.model,
     mode: cfg.workerPermissions === 'read-only' ? 'plan' : 'yolo',
     gate: gated ? GATE : '',
     disallowed: DISALLOWED,
