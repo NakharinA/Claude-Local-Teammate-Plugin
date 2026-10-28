@@ -47,6 +47,7 @@ function harness(on: any, opts: { agents?: any[]; serverUp?: boolean; askAnswer?
     if (files.has(p)) return { value: files.get(p) }
     // The plugin's own copy of the OpenCode tools ($.plugin.root differs per machine)
     if (p.endsWith('/opencode/tools/team.ts')) return { value: '// team tools' }
+    if (p.endsWith('/zcode/team-mcp.mjs')) return { value: '// team mcp' }
     return { deny: 'ENOENT ' + p }
   })
   on('fs.write', ($: any, e: any) => {
@@ -638,6 +639,7 @@ function harnessV2(on: any, opts: { askAnswer?: string; service?: boolean } = {}
   const replies: { id: string; body: any }[] = []
   const interrupted: string[] = []
   const auth: string[] = []
+  const reloads: string[] = []
   let nextId = 1
   let nextMsg = 1
   if (opts.service !== false) h.files.set('/home/me/.local/state/opencode/service.json', JSON.stringify({ url: SVC + '/', password: 'svcpw' }))
@@ -684,6 +686,10 @@ function harnessV2(on: any, opts: { askAnswer?: string; service?: boolean } = {}
       s.permissions = s.permissions.filter((p) => p.id !== m![2])
       return json(204, undefined)
     }
+    if (path === '/api/location/reload' && method === 'POST') {
+      reloads.push(url.searchParams.get('location[directory]') || '')
+      return json(204, undefined)
+    }
     if ((m = path.match(/^\/api\/session\/([^/]+)\/interrupt$/))) {
       interrupted.push(m[1])
       sessions.get(m[1])!.busy = false
@@ -704,7 +710,7 @@ function harnessV2(on: any, opts: { askAnswer?: string; service?: boolean } = {}
     s.messages.push({ id: 'msg_' + nextMsg++, type: 'idle', outcome: o.error ? 'failed' : 'succeeded' })
     s.busy = false
   }
-  return { ...h, sessions, created, prompts, replies, interrupted, auth, finish }
+  return { ...h, sessions, created, prompts, replies, interrupted, auth, reloads, finish }
 }
 
 test('with OpenCode 2 the worker runs on the background service, with v2 permission rules', async ($, on) => {
@@ -852,3 +858,31 @@ test('with OpenCode 2 a mapped model is pinned on the session', async ($, on) =>
   await $.tool.call({ ...spawnCall, model: 'sonnet' } as any)
   expect(h.created[0].model).toEqual({ providerID: 'github-copilot', id: 'claude-sonnet-5.5' })
 }, aliases)
+
+test('/opencode-team setup on OpenCode 2 adds the team MCP server to the project config and reloads it', async ($, on) => {
+  const h = harnessV2(on)
+  h.files.set('/work/.opencode/opencode.json', JSON.stringify({ model: 'x/y', mcp: { servers: { other: { type: 'remote', url: 'u' } } } }))
+  await start($)
+  const out: any = await $.command.run({ command: 'opencode-team', args: 'setup' })
+  expect(out.text).toContain('Installed the team tools for OpenCode 2')
+  expect(h.files.get('/work/.opencode/team-mcp.mjs')).toBe('// team mcp')
+  const conf = JSON.parse(h.files.get('/work/.opencode/opencode.json')!)
+  expect(conf.model).toBe('x/y')
+  expect(conf.mcp.servers.other).toEqual({ type: 'remote', url: 'u' })
+  expect(conf.mcp.servers['opencode-team']).toEqual({
+    type: 'local',
+    command: ['node', '/work/.opencode/team-mcp.mjs'],
+    environment: { OPENCODE_TEAM_DIR: '/work/.opencode-team' },
+    codemode: false,
+  })
+  expect(h.reloads).toEqual(['/work'])
+  const status: any = await $.command.run({ command: 'opencode-team', args: '' })
+  expect(status.text).not.toContain('Team tools: not installed')
+})
+
+test('the first prompt tells a worker its name for the team tools', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call(spawnCall as any)
+  expect(h.prompts[0].text).toContain('give your name, "qwen-api"')
+})

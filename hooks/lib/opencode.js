@@ -20,7 +20,7 @@ let server = null
 export const meta = {
   id: 'opencode',
   label: 'OpenCode',
-  toolsPath: '.opencode/tools/team.ts',
+  toolsPath: '.opencode/team-mcp.mjs',
   saved: (w) => ({ seen: w.seen }),
   restore(w, s) {
     w.seen = Number(s.seen || 0)
@@ -359,13 +359,49 @@ export async function answer($, cfg, w, req, decision) {
   }
 }
 
+// OpenCode 1 loads custom tools from .opencode/tools/*.ts; OpenCode 2 doesn't, so
+// there the same tools come from the stdio MCP server, set up in .opencode/opencode.json.
 export async function setup($, cfg) {
   const dir = await $.session.cwd()
   await $.fs.write(dir + '/.opencode/tools/team.ts', await $.fs.read($.plugin.root + '/opencode/tools/team.ts'))
-  return (
-    'Installed the team tools at .opencode/tools/team.ts.' +
-    ((await up($, cfg)) ? ' Restart `opencode serve` so it loads them (OpenCode reads tools at startup).' : '')
-  )
+  await $.fs.write(dir + '/.opencode/team-mcp.mjs', await $.fs.read($.plugin.root + '/zcode/team-mcp.mjs'))
+  const running = await up($, cfg)
+  if (!running || server.v === 1) {
+    return (
+      'Installed the team tools at .opencode/tools/team.ts.' +
+      (running ? ' Restart `opencode serve` so it loads them (OpenCode reads tools at startup).' : '')
+    )
+  }
+  if (await $.fs.exists(dir + '/.opencode/opencode.jsonc')) {
+    return (
+      'Copied the team MCP server to .opencode/team-mcp.mjs, but .opencode/opencode.jsonc exists, so add this to it yourself: ' +
+      JSON.stringify({ mcp: { servers: { 'opencode-team': teamServer(dir) } } })
+    )
+  }
+  const file = dir + '/.opencode/opencode.json'
+  let conf = {}
+  if (await $.fs.exists(file)) {
+    try {
+      conf = JSON.parse(String(await $.fs.read(file)))
+    } catch {
+      throw new Error('.opencode/opencode.json is not valid JSON; fix it, then run setup again.')
+    }
+  }
+  conf.mcp = conf.mcp || {}
+  conf.mcp.servers = { ...(conf.mcp.servers || {}), 'opencode-team': teamServer(dir) }
+  await $.fs.write(file, JSON.stringify(conf, null, 2) + '\n')
+  // OpenCode 2 rereads a project's config on reload, no restart needed.
+  await oc($, cfg, 'POST', '/api/location/reload?location%5Bdirectory%5D=' + encodeURIComponent(dir))
+  return 'Installed the team tools for OpenCode 2: the opencode-team MCP server in .opencode/opencode.json (server .opencode/team-mcp.mjs).'
+}
+
+function teamServer(dir) {
+  return {
+    type: 'local',
+    command: ['node', dir + '/.opencode/team-mcp.mjs'],
+    environment: { OPENCODE_TEAM_DIR: dir + '/' + TEAM_DIR },
+    codemode: false,
+  }
 }
 
 function portOf(u) {

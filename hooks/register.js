@@ -341,7 +341,9 @@ function systemFor(w) {
     'what you changed (files), how you checked it, and anything left open or uncertain.',
     'Your final answer is delivered to whoever gave you the task, so you do not need a tool to report completion.',
     'If you need a decision, are blocked, or have something another member needs (an API contract, a changed interface),',
-    'use the team_send tool (team_members lists who is on the team). Stay inside the files your task names unless told otherwise.',
+    'use the team_send tool (team_members lists who is on the team; the tools may be named opencode-team_team_send and ' +
+      'opencode-team_team_members, and when they ask for "from", give your name, ' + JSON.stringify(w.name) + '). ' +
+      'Stay inside the files your task names unless told otherwise.',
     cfg.workerPermissions === 'lead'
       ? 'Shell commands are approved by the lead. If one is rejected, read the reason in the tool result and follow it.'
       : '',

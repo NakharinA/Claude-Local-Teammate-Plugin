@@ -1,6 +1,6 @@
 {
   "name": "opencode-team",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Let OpenCode or ZCode workers on your own model (Qwen, DeepSeek, GLM, Ollama…) join your Claude Code team: spawn them with the Agent tool, talk to them with SendMessage, and let Claude approve their shell commands as project manager.",
   "author": {
     "name": "opencode-team contributors"
