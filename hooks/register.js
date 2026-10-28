@@ -25,6 +25,7 @@ import {
   poll as ocPoll,
   answer as ocAnswer,
   setup as ocSetup,
+  where as ocWhere,
 } from './lib/opencode.js'
 import {
   meta as zcMeta,
@@ -685,7 +686,7 @@ async function routeOutbox($, from, to, text) {
 async function statusText($) {
   const up = await bUp($)
   const lines = [
-    backend.label + ': ' + (backend.id === 'opencode' ? cfg.serverUrl + (up ? ' (running)' : ' (not running)') : up ? 'available' : 'not found (' + cfg.zcodeCommand + ')'),
+    backend.label + ': ' + (backend.id === 'opencode' ? ocWhere(cfg) + (up ? ' (running)' : ' (not running)') : up ? 'available' : 'not found (' + cfg.zcodeCommand + ')'),
     'Worker model: ' + (cfg.model || 'NOT SET — set the "model" option before spawning') + ' · permissions: ' + cfg.workerPermissions,
   ]
   const dir = await $.session.cwd()

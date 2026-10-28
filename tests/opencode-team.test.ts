@@ -14,7 +14,7 @@ const posix = (p: string) => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:(?
 type Msg = { info: Record<string, any>; parts: Record<string, any>[] }
 
 /** Wires every stub the mod needs and returns handles to inspect what it did. */
-function harness(on: any, opts: { agents?: any[]; serverUp?: boolean; askAnswer?: string } = {}) {
+function harness(on: any, opts: { agents?: any[]; serverUp?: boolean; askAnswer?: string; fetch?: (e: any) => any } = {}) {
   const pendingPermissions: any[] = []
   const permissionReplies: { id: string; response: string; message?: string }[] = []
   const questions: string[] = []
@@ -87,6 +87,7 @@ function harness(on: any, opts: { agents?: any[]; serverUp?: boolean; askAnswer?
   })
 
   on('http.fetch', ($: any, e: any) => {
+    if (opts.fetch) return opts.fetch(e)
     if (!serverUp) return { deny: 'ECONNREFUSED' }
     const url = new URL(e.url)
     const method = (e.init && e.init.method) || 'GET'
@@ -622,3 +623,186 @@ test('ZCode spawn says when ZCode is not installed', async ($, on) => {
   const out: any = await $.tool.call({ ...spawnCall, name: 'qwen-z' } as any)
   expect(out.deny).toContain('ZCode was not found')
 }, { ...zcode, zcodeCommand: '/nowhere/zcode.cjs' })
+
+// ---------------------------------------------------------------------------
+// OpenCode 2: everything under /api, found through the background service's file
+
+const SVC = 'http://127.0.0.1:5000'
+
+/** A fake OpenCode 2: serverUrl (4096) refuses /api without its password; the service at SVC answers. */
+function harnessV2(on: any, opts: { askAnswer?: string; service?: boolean } = {}) {
+  const h = harness(on, { askAnswer: opts.askAnswer, fetch: (e: any) => fetchV2(e) })
+  const sessions = new Map<string, { messages: any[]; busy: boolean; permissions: any[] }>()
+  const created: any[] = []
+  const prompts: { id: string; text: string }[] = []
+  const replies: { id: string; body: any }[] = []
+  const interrupted: string[] = []
+  const auth: string[] = []
+  let nextId = 1
+  let nextMsg = 1
+  if (opts.service !== false) h.files.set('/home/me/.local/state/opencode/service.json', JSON.stringify({ url: SVC + '/', password: 'svcpw' }))
+
+  const json = (status: number, body: unknown) => ({
+    value: { status, ok: status >= 200 && status < 300, headers: {}, text: body === undefined ? '' : JSON.stringify(body) },
+  })
+  function fetchV2(e: any) {
+    const url = new URL(e.url)
+    const method = (e.init && e.init.method) || 'GET'
+    const path = url.pathname
+    const body = e.init && e.init.body ? JSON.parse(e.init.body) : undefined
+    // Every path that isn't /api is the web UI, an HTML page with 200
+    if (!path.startsWith('/api/')) return { value: { status: 200, ok: true, headers: {}, text: '<!doctype html>' } }
+    if (url.origin !== SVC || e.init.headers.authorization !== 'Basic ' + btoa('opencode:svcpw')) return json(401, { error: 'unauthorized' })
+    auth.push(path)
+    let m: RegExpMatchArray | null
+    if (path === '/api/session/active') {
+      const data: Record<string, unknown> = {}
+      for (const [id, s] of sessions) if (s.busy) data[id] = { type: 'running' }
+      return json(200, { data })
+    }
+    if (path === '/api/session' && method === 'POST') {
+      created.push(body)
+      const id = 'ses_v2_' + nextId++
+      sessions.set(id, { messages: [], busy: false, permissions: [] })
+      return json(200, { data: { id, location: body.location } })
+    }
+    if ((m = path.match(/^\/api\/session\/([^/]+)\/prompt$/))) {
+      const s = sessions.get(m[1])!
+      prompts.push({ id: m[1], text: body.text })
+      s.messages.push({ id: 'msg_' + nextMsg++, type: 'user', text: body.text })
+      s.busy = true
+      return json(200, { data: { id: 'msg_x', type: 'user' } })
+    }
+    if ((m = path.match(/^\/api\/session\/([^/]+)\/message$/))) {
+      // Newest first, like order=desc
+      return json(200, { data: sessions.get(m[1])!.messages.slice().reverse(), cursor: { previous: null, next: null } })
+    }
+    if ((m = path.match(/^\/api\/session\/([^/]+)\/permission$/))) return json(200, { data: sessions.get(m[1])!.permissions })
+    if ((m = path.match(/^\/api\/session\/([^/]+)\/permission\/([^/]+)\/reply$/))) {
+      const s = sessions.get(m[1])!
+      replies.push({ id: m[2], body })
+      s.permissions = s.permissions.filter((p) => p.id !== m![2])
+      return json(204, undefined)
+    }
+    if ((m = path.match(/^\/api\/session\/([^/]+)\/interrupt$/))) {
+      interrupted.push(m[1])
+      sessions.get(m[1])!.busy = false
+      return json(200, { interrupted: true })
+    }
+    return json(404, { error: 'no route ' + method + ' ' + path })
+  }
+
+  /** The worker's turn ends: its replies, then the idle marker. */
+  function finish(id: string, text: string, o: { files?: string[]; model?: string; error?: string } = {}) {
+    const s = sessions.get(id)!
+    const [providerID, mid] = (o.model || 'company/qwen-test').split('/')
+    const content: any[] = (o.files || []).map((f) => ({ type: 'tool', name: 'write', state: { status: 'completed', input: { path: f } } }))
+    content.push({ type: 'text', text })
+    const msg: any = { id: 'msg_' + nextMsg++, type: 'assistant', model: { providerID, id: mid }, content, time: { created: 1, completed: 2 } }
+    if (o.error) msg.error = { type: 'api', message: o.error }
+    s.messages.push(msg)
+    s.messages.push({ id: 'msg_' + nextMsg++, type: 'idle', outcome: o.error ? 'failed' : 'succeeded' })
+    s.busy = false
+  }
+  return { ...h, sessions, created, prompts, replies, interrupted, auth, finish }
+}
+
+test('with OpenCode 2 the worker runs on the background service, with v2 permission rules', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  const out: any = await $.tool.call(spawnCall as any)
+  expect(out.result).toMatchObject({ status: 'async_launched', agentId: 'qwen-api' })
+  const s = h.created[0]
+  expect(s.model).toEqual({ providerID: 'company', id: 'qwen-test' })
+  expect(s.agent).toBe('build')
+  expect(s.location).toEqual({ directory: '/work' })
+  const effect = (a: string) => s.permissions.find((r: any) => r.action === a)?.effect
+  expect(effect('edit')).toBe('allow')
+  expect(effect('write')).toBe('allow')
+  expect(effect('shell')).toBe('ask')
+  expect(effect('question')).toBe('deny')
+  expect(effect('subagent')).toBe('deny')
+  // No system field in v2: the team instructions open the first prompt
+  expect(h.prompts[0].text).toContain('You are "qwen-api"')
+  expect(h.prompts[0].text.endsWith('Implement GET /users in api.js')).toBe(true)
+  const roster = JSON.parse(h.files.get('/work/.opencode-team/team.json')!)
+  expect(roster.members[0]).toMatchObject({ name: 'qwen-api', sessionID: 'ses_v2_1' })
+})
+
+test('an OpenCode 2 reply is delivered once the idle marker follows it', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call(spawnCall as any)
+  await h.clock.advance(2000)
+  expect(h.submitted.length).toBe(0) // still running
+  h.finish('ses_v2_1', 'Added GET /users.', { files: ['/work/src/api.js'] })
+  await h.clock.advance(2000)
+  expect(h.submitted.length).toBe(1)
+  expect(h.submitted[0]).toContain('Reply from qwen-api')
+  expect(h.submitted[0]).toContain('Added GET /users.')
+  expect(h.submitted[0]).toContain('Files it changed: /work/src/api.js')
+  expect(h.submitted[0]).not.toContain('⚠')
+  await h.clock.advance(4000)
+  expect(h.submitted.length).toBe(1)
+
+  // The next message is a plain prompt, and only the new turn is delivered
+  await $.tool.call({ tool: 'SendMessage', to: 'qwen-api', message: 'Add pagination.' } as any)
+  expect(h.prompts[1].text).toBe('Message from lead:\n\nAdd pagination.')
+  h.finish('ses_v2_1', 'Pagination added.', { model: 'anthropic/claude-sonnet' })
+  await h.clock.advance(2000)
+  expect(h.submitted[1]).toContain('Pagination added.')
+  expect(h.submitted[1]).not.toContain('Added GET /users.')
+  expect(h.submitted[1]).toContain('ran on anthropic/claude-sonnet, not on the configured company/qwen-test')
+})
+
+test('an OpenCode 2 error is reported to the lead', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call(spawnCall as any)
+  h.finish('ses_v2_1', '', { error: 'rate limited by provider' })
+  await h.clock.advance(2000)
+  expect(h.submitted[0]).toContain('rate limited by provider')
+})
+
+test('an OpenCode 2 shell request goes to Claude in lead mode, and the answer uses the v2 reply', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call(spawnCall as any)
+  h.sessions.get('ses_v2_1')!.permissions.push(
+    { id: 'per_a', sessionID: 'ses_v2_1', action: 'shell', resources: ['npm test'] },
+    { id: 'per_b', sessionID: 'ses_v2_1', action: 'shell', resources: ['rm -rf dist'] },
+  )
+  await h.clock.advance(2000)
+  expect(h.submitted[0]).toContain('is waiting for your approval to use shell')
+  expect(h.submitted[0]).toContain('npm test')
+  await $.tool.call({ tool: 'SendMessage', to: 'qwen-api', message: 'approve' } as any)
+  await $.tool.call({ tool: 'SendMessage', to: 'qwen-api', message: 'reject: not outside the build' } as any)
+  expect(h.replies).toEqual([
+    { id: 'per_a', body: { decision: 'once' } },
+    { id: 'per_b', body: { decision: 'reject', message: 'not outside the build' } },
+  ])
+  expect(h.prompts.length).toBe(1)
+}, lead)
+
+test('TaskStop interrupts an OpenCode 2 worker', async ($, on) => {
+  const h = harnessV2(on)
+  await start($)
+  await $.tool.call(spawnCall as any)
+  await $.tool.call({ tool: 'TaskStop', task_id: 'qwen-api' } as any)
+  expect(h.interrupted).toEqual(['ses_v2_1'])
+})
+
+test('/opencode-team status names the OpenCode 2 service', async ($, on) => {
+  harnessV2(on)
+  await start($)
+  const out: any = await $.command.run({ command: 'opencode-team', args: '' })
+  expect(out.text).toContain(SVC + ' (OpenCode 2) (running)')
+})
+
+test('an OpenCode 2 server without its password and no service says so', async ($, on) => {
+  const h = harnessV2(on, { service: false })
+  await start($)
+  const out: any = await $.tool.call(spawnCall as any)
+  expect(out.deny).toContain('refused the password (HTTP 401)')
+  expect(h.created.length).toBe(0)
+})

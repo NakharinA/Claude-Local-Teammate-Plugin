@@ -80,7 +80,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     return reply(msg.id, {
       protocolVersion: (msg.params && msg.params.protocolVersion) || '2025-06-18',
       capabilities: { tools: {} },
-      serverInfo: { name: 'opencode-team', version: '0.2.0' },
+      serverInfo: { name: 'opencode-team', version: '0.3.0' },
     })
   }
   if (msg.method === 'tools/list') return reply(msg.id, { tools: TOOLS })

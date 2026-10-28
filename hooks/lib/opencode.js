@@ -1,13 +1,21 @@
 // OpenCode backend: workers are sessions on an `opencode serve` HTTP server.
 //
 // Every function takes ($, cfg, …); register.js picks this backend or ZCode's.
+//
+// Two server APIs are supported. OpenCode 1.x serves `/session/…` on serverUrl.
+// OpenCode 2.x moved everything under `/api/…`, with new request and message shapes,
+// and runs as a background service whose URL and password it writes to
+// ~/.local/state/opencode/service.json. `resolve` finds out which one answers.
 
 import { TEAM_DIR, isWindowsPath, pause, startDetached } from './util.js'
 
-const EDIT_TOOLS = ['edit', 'write', 'patch', 'multiedit']
+const EDIT_TOOLS = ['edit', 'write', 'patch', 'multiedit', 'apply_patch']
 
 /** Pending OpenCode permission ids already passed on. */
 const asked = new Set()
+
+/** The server in use: { v: 1 | 2, url, password }, or null until resolve finds one. */
+let server = null
 
 export const meta = {
   id: 'opencode',
@@ -19,16 +27,18 @@ export const meta = {
   },
 }
 
-function authHeaders(cfg) {
+function authHeaders(password) {
   const h = { 'content-type': 'application/json' }
-  if (cfg.serverPassword) h.authorization = 'Basic ' + btoa('opencode:' + cfg.serverPassword)
+  if (password) h.authorization = 'Basic ' + btoa('opencode:' + password)
   return h
 }
 
 async function oc($, cfg, method, path, body) {
-  const dir = await $.session.cwd()
-  const url = cfg.serverUrl + path + (path.includes('?') ? '&' : '?') + 'directory=' + encodeURIComponent(dir)
-  const init = { method, headers: authHeaders(cfg) }
+  const srv = server || { v: 1, url: cfg.serverUrl, password: cfg.serverPassword }
+  let url = srv.url + path
+  // v2 sessions carry their directory (set at create); v1 scopes every call by query.
+  if (srv.v === 1) url += (path.includes('?') ? '&' : '?') + 'directory=' + encodeURIComponent(await $.session.cwd())
+  const init = { method, headers: authHeaders(srv.password) }
   if (body !== undefined) init.body = JSON.stringify(body)
   const r = await $.http.fetch(url, init)
   if (!r.ok) {
@@ -44,13 +54,66 @@ async function oc($, cfg, method, path, body) {
   }
 }
 
+/** 1 or 2 when an OpenCode server of that API answers at url with password, 'auth' on a v2 401, else 0. */
+async function probe($, url, password) {
+  try {
+    const r = await $.http.fetch(url + '/api/session/active', { method: 'GET', headers: authHeaders(password) })
+    if (r.status === 401) return 'auth'
+    const body = r.ok ? JSON.parse(r.text || 'null') : null
+    if (body && body.data && typeof body.data === 'object') return 2
+  } catch {
+    // Not JSON (a v1 server's web UI), or nothing listening.
+  }
+  try {
+    // A v2 server answers this path too, with its web UI, so only a JSON object counts.
+    const r = await $.http.fetch(url + '/session/status', { method: 'GET', headers: authHeaders(password) })
+    const body = r.ok ? JSON.parse(r.text || 'null') : null
+    if (body && typeof body === 'object' && !Array.isArray(body)) return 1
+  } catch {
+    // Not JSON, or nothing listening.
+  }
+  return 0
+}
+
+/** The OpenCode 2 background service, from the file it writes while it runs. */
+async function v2Service($) {
+  const state = (await $.env.get('XDG_STATE_HOME')) || ((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '') + '/.local/state'
+  try {
+    const s = JSON.parse(String(await $.fs.read(state + '/opencode/service.json')))
+    if (s && s.url) return { url: String(s.url).replace(/\/+$/, ''), password: String(s.password || '') }
+  } catch {
+    // No service file: the service isn't installed or isn't running.
+  }
+  return null
+}
+
+/** Finds the server: serverUrl first (v1 or v2), then the v2 service. Sets `server`; null if none answers. */
+async function resolve($, cfg) {
+  const own = await probe($, cfg.serverUrl, cfg.serverPassword)
+  if (own === 1 || own === 2) return (server = { v: own, url: cfg.serverUrl, password: cfg.serverPassword })
+  const svc = await v2Service($)
+  if (svc && (await probe($, svc.url, svc.password)) === 2) return (server = { v: 2, ...svc })
+  server = null
+  if (own === 'auth') {
+    throw new Error(
+      'OpenCode at ' + cfg.serverUrl + ' refused the password (HTTP 401). Set the serverPassword option, ' +
+        'or, with OpenCode 2, start its background service so the mod can use that instead.',
+    )
+  }
+  return null
+}
+
 export async function up($, cfg) {
   try {
-    const r = await $.http.fetch(cfg.serverUrl + '/session/status', { method: 'GET', headers: authHeaders(cfg) })
-    return r.ok
+    return !!(await resolve($, cfg))
   } catch {
     return false
   }
+}
+
+/** Where the workers' server is, for /opencode-team status. */
+export function where(cfg) {
+  return server ? server.url + (server.v === 2 ? ' (OpenCode 2)' : '') : cfg.serverUrl
 }
 
 // Set once, on the session. Never pass `tools` with a prompt: OpenCode turns
@@ -65,6 +128,15 @@ function permissionRules(mode) {
   if (mode === 'read-only') return [rule('edit', 'deny'), rule('bash', 'deny'), rule('webfetch', 'deny'), ...always]
   if (mode === 'lead') return [rule('edit', 'allow'), rule('bash', 'ask'), rule('webfetch', 'ask'), ...always]
   return [rule('edit', 'allow'), rule('bash', 'ask'), rule('webfetch', 'deny'), ...always]
+}
+
+// OpenCode 2 renamed the rule fields and some actions (bash → shell, task → subagent).
+const V2_ACTIONS = { edit: ['edit', 'write'], bash: ['shell'], webfetch: ['webfetch', 'websearch'], task: ['subagent'] }
+
+function permissionRulesV2(mode) {
+  return permissionRules(mode).flatMap((r) =>
+    (V2_ACTIONS[r.permission] || [r.permission]).map((action) => ({ action, resource: r.pattern, effect: r.action })),
+  )
 }
 
 function modelRef(cfg) {
@@ -96,8 +168,30 @@ function summarize(replies) {
   return { text: texts.filter(Boolean).join('\n\n'), files: Array.from(files), error, model }
 }
 
+/** Like summarize, for OpenCode 2 messages; idle is the message that ended the turn. */
+function summarizeV2(replies, idle) {
+  const texts = []
+  const files = new Set()
+  let error = ''
+  let model = ''
+  for (const m of replies) {
+    for (const p of m.content || []) {
+      if (p.type === 'text' && p.text) texts.push(p.text.trim())
+      if (p.type === 'tool' && EDIT_TOOLS.includes(p.name)) {
+        const input = (p.state && p.state.input) || {}
+        const f = input.filePath || input.file_path || input.path
+        if (f) files.add(String(f))
+      }
+    }
+    if (m.model && m.model.providerID && m.model.id) model = m.model.providerID + '/' + m.model.id
+    if (m.error) error = m.error.message || m.error.type || JSON.stringify(m.error)
+  }
+  if (!error && idle.outcome === 'failed') error = (idle.error && idle.error.message) || 'the turn failed'
+  return { text: texts.filter(Boolean).join('\n\n'), files: Array.from(files), error, model }
+}
+
 export async function ensure($, cfg) {
-  if (await up($, cfg)) return
+  if (await resolve($, cfg)) return
   if (!cfg.autoStart) {
     throw new Error(
       'nothing answers at ' + cfg.serverUrl + '. Start it in your project folder with `' + cfg.opencodeCommand +
@@ -111,7 +205,7 @@ export async function ensure($, cfg) {
   await startDetached($, dir, cfg.opencodeCommand, ['serve', '--port', port, '--hostname', hostOf(cfg.serverUrl)], logFile)
   for (let i = 0; i < 60; i++) {
     await pause($, 500, isWindowsPath(dir))
-    if (await up($, cfg)) {
+    if (await resolve($, cfg)) {
       $.ui.toast('opencode-team: started OpenCode on port ' + port)
       return
     }
@@ -120,6 +214,17 @@ export async function ensure($, cfg) {
 }
 
 export async function create($, cfg, w) {
+  if (server && server.v === 2) {
+    const body = { agent: cfg.agent, location: { directory: await $.session.cwd() }, permissions: permissionRulesV2(cfg.workerPermissions) }
+    const model = modelRef(cfg)
+    // v2 pins the model on the session, not on each prompt.
+    if (model) body.model = { providerID: model.providerID, id: model.modelID }
+    const res = await oc($, cfg, 'POST', '/api/session', body)
+    if (!res || !res.data || !res.data.id) throw new Error('OpenCode returned no session id')
+    w.sessionID = res.data.id
+    w.seen = 0
+    return
+  }
   const session = await oc($, cfg, 'POST', '/session', {
     title: w.name + ': ' + (w.description || 'task'),
     permission: permissionRules(cfg.workerPermissions),
@@ -130,6 +235,11 @@ export async function create($, cfg, w) {
 }
 
 export async function prompt($, cfg, w, text, system, first) {
+  if (server && server.v === 2) {
+    // v2 prompts take no system text, so the team instructions open the first message.
+    await oc($, cfg, 'POST', '/api/session/' + w.sessionID + '/prompt', { text: first && system ? system + '\n\n---\n\n' + text : text })
+    return
+  }
   const body = { parts: [{ type: 'text', text }], system, agent: cfg.agent }
   const model = modelRef(cfg)
   if (model) body.model = model
@@ -141,6 +251,10 @@ export async function prompt($, cfg, w, text, system, first) {
 }
 
 export async function abort($, cfg, w) {
+  if (server && server.v === 2) {
+    await oc($, cfg, 'POST', '/api/session/' + w.sessionID + '/interrupt')
+    return
+  }
   await oc($, cfg, 'POST', '/session/' + w.sessionID + '/abort')
 }
 
@@ -148,6 +262,7 @@ export async function abort($, cfg, w) {
 export async function poll($, cfg, busy) {
   const events = []
   if (!busy.length || !(await up($, cfg))) return events
+  if (server.v === 2) return pollV2($, cfg, busy, events)
   const pending = await oc($, cfg, 'GET', '/permission')
   if (Array.isArray(pending)) {
     // Forget requests OpenCode no longer lists, so the set doesn't grow all session.
@@ -182,8 +297,56 @@ export async function poll($, cfg, busy) {
   return events
 }
 
+async function pollV2($, cfg, busy, events) {
+  const live = new Set()
+  for (const w of busy) {
+    const pending = await oc($, cfg, 'GET', '/api/session/' + w.sessionID + '/permission')
+    for (const p of (pending && pending.data) || []) {
+      live.add(p.id)
+      if (asked.has(p.id)) continue
+      asked.add(p.id)
+      const what = (p.resources || []).join(' ') || (p.metadata && (p.metadata.command || p.metadata.title)) || ''
+      events.push({ type: 'permission', w, req: { id: p.id, tool: p.action, what, canAlways: true } })
+    }
+  }
+  for (const id of asked) if (!live.has(id)) asked.delete(id)
+  const active = ((await oc($, cfg, 'GET', '/api/session/active')) || {}).data || {}
+  for (const w of busy) {
+    if (active[w.sessionID]) continue
+    const turn = await lastTurn($, cfg, w.sessionID)
+    // The turn is over once OpenCode has written its idle marker after the replies.
+    if (!turn.idle || !turn.replies.length) continue
+    events.push({ type: 'reply', w, result: summarizeV2(turn.replies, turn.idle) })
+  }
+  return events
+}
+
+/** The newest turn: assistant replies since the last user message, oldest first, and its idle marker if it ended. */
+async function lastTurn($, cfg, sessionID) {
+  const replies = []
+  let idle = null
+  let path = '/api/session/' + sessionID + '/message?order=desc&limit=50'
+  for (let page = 0; page < 20 && path; page++) {
+    const res = (await oc($, cfg, 'GET', path)) || {}
+    for (const m of res.data || []) {
+      if (m.type === 'user') return { replies: replies.reverse(), idle }
+      if (m.type === 'idle' && !replies.length && !idle) idle = m
+      if (m.type === 'assistant') replies.push(m)
+    }
+    const next = res.cursor && res.cursor.next
+    path = next && (res.data || []).length ? '/api/session/' + sessionID + '/message?limit=50&cursor=' + encodeURIComponent(next) : ''
+  }
+  return { replies: replies.reverse(), idle }
+}
+
 /** decision: { reply: 'once' | 'always' | 'reject', message? } */
 export async function answer($, cfg, w, req, decision) {
+  if (server && server.v === 2) {
+    const v2 = { decision: decision.reply }
+    if (decision.message) v2.message = decision.message
+    await oc($, cfg, 'POST', '/api/session/' + w.sessionID + '/permission/' + req.id + '/reply', v2)
+    return
+  }
   const body = { reply: decision.reply }
   if (decision.message) body.message = decision.message
   try {

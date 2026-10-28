@@ -169,7 +169,7 @@ In Claude Code run `/plugin configure opencode-team@opencode-team` (or `/config`
 | `backend` | `opencode` | `opencode` or `zcode`: which coding agent runs the workers |
 | `model` | — **(required)** | The only model workers run on. OpenCode: `provider/model`, e.g. `company/qwen3.8`. ZCode: `providerId/modelId` from the provider config, e.g. `qwen/qwen3.8`. Without it, workers aren't started |
 | `workerPermissions` | `lead` | `lead`: workers edit files freely and **Claude approves or rejects every shell command**; you get no dialogs. `ask`: you approve every shell command in a Claude Code dialog. `read-only`: no edits, no shell. `full-auto`: edits and shell without asking |
-| `serverUrl` | `http://127.0.0.1:4096` | OpenCode: where `opencode serve` listens |
+| `serverUrl` | `http://127.0.0.1:4096` | OpenCode: where `opencode serve` listens. With OpenCode 2, if nothing usable answers here, the mod uses OpenCode's background service instead (URL and password from `~/.local/state/opencode/service.json`) |
 | `autoStart` | `true` | OpenCode: start `opencode serve` in the project folder if nothing answers |
 | `opencodeCommand` | `opencode` | OpenCode: path to OpenCode if it isn't on `PATH` |
 | `agent` | `build` | OpenCode: the agent workers run as. Pinned so that plugins which replace OpenCode's default agent can't switch the model |
@@ -234,6 +234,7 @@ The mod uses only documented Claude Code mod hooks — nothing reads or writes C
 
 - **Spawn.** A `tool.call` hook on `Agent` answers calls for `opencode-team:worker` itself: it creates an OpenCode session (`POST /session` with the permission rules), sends the task (`prompt_async`), and returns a normal *background agent launched* result, so Claude treats the worker like any background agent.
 - **Messages in.** A `tool.call` hook on `SendMessage` forwards messages addressed to a worker; messages to anyone else pass through untouched. `TaskStop` works the same way.
+- **OpenCode 1 and 2.** OpenCode 2 moved its API under `/api` and changed the request and message shapes. The mod probes the server and talks to either version; the paths below are OpenCode 1's. With OpenCode 2 the model is pinned on the session rather than on each prompt, the team instructions open the first prompt (v2 prompts take no system text), and a turn counts as finished once OpenCode writes its `idle` message.
 - **Replies out.** A timer polls OpenCode (`/session/status`, `/session/{id}/message`). When a worker's turn ends, its text, changed files and any error go to whoever last wrote to it: the lead via `$.prompt.submit`, a Claude teammate via `$.session.send`.
 - **Worker-initiated messages.** `team_send` appends a line to `.opencode-team/outbox.jsonl`; the timer routes it. `team_members` reads `.opencode-team/team.json`, which the mod keeps current.
 - **Approvals.**
